@@ -1,31 +1,21 @@
 import logging
 from socket import socket, AF_INET, SOCK_STREAM
 from noise.connection import NoiseConnection
+import noise.constants as constants
 
 
-class Client:
-    recv_buffer: int = 4096
+class RegisterChannel:
     pattern_nn: bytes = b"Noise_NN_25519_ChaChaPoly_SHA256"
+    # Using that by specification, maximum noise message is 64k
+    recv_buffersize = constants.MAX_MESSAGE_LEN
+    noise: NoiseConnection
+    soc: socket
 
-    def connect(self, host, port) -> socket:
-        soc = socket(AF_INET, SOCK_STREAM)
-        soc.connect((host, port))
+    def __init__(self, soc: socket) -> None:
+        self.soc = soc
+        self.handshake()
 
-        return soc
-
-    def send(self, soc: socket, data: bytes):
-        # For consistency with rest of the interface, even if it is just 1 call
-        soc.sendall(data)
-
-    def receive(self, soc: socket) -> bytes:
-        # TODO idea is to read whole message here if its longer than limit
-        # to recv()
-        return soc.recv(self.recv_buffer)
-
-    def disconnect(self, soc: socket):
-        soc.close()
-
-    def handshake_NN(self, soc: socket) -> NoiseConnection:
+    def handshake(self) -> NoiseConnection:
         noise = NoiseConnection.from_name(self.pattern_nn)
         # Set role in this connection as initiator
         noise.set_as_initiator()
@@ -35,41 +25,57 @@ class Client:
         # Perform handshake - as we are the initiator, we need to generate first message.
         # We don't provide any payload (although we could, but it would be cleartext for this pattern).
         message = noise.write_message()
-        self.send(soc, message)
+        self.soc.sendall(message)
 
         # Receive the message from the responder
-        received = self.receive(soc)
+        received = self.soc.recv(self.recv_buffersize)
         # Feed the received message into noise
         payload = noise.read_message(received)
         # Payload, probably extra data? Might be something used for certificate?
 
-        return noise
+        self.noise = noise
 
+    def send(self, data: bytes) -> None:
+        self.soc.sendall(self.noise.encrypt(data))
+
+    def receive(self) -> bytes:
+        data = self.soc.recv(self.recv_buffersize)
+        if data:
+            return self.noise.decrypt(data)
+
+        return None
+
+
+class Client:
     def register(self, host, port):
-        soc = self.connect(host, port)
+        soc = socket(AF_INET, SOCK_STREAM)
+        soc.connect((host, port))
 
-        # Send server that we want to register
-        logging.info("Sending command")
-        self.send(soc, b"REGISTER\n")
+        logging.debug("Registering...")
+        soc.sendall(b"REGISTER\n")
+        status = soc.recv(2048)
+        if status != b"OK\n":
+            logging.error("Register command failed")
+            return
 
-        noise = self.handshake_NN(soc)
+        channel = RegisterChannel(soc)
 
-        # As of now, the handshake should be finished (as we are using NN pattern).
-        # Any further calls to write_message or read_message would raise NoiseHandshakeError exception.
-        # We can use encrypt/decrypt methods of NoiseConnection now for encryption and decryption of messages.
-        encrypted_message = noise.encrypt(b'{user: "pepa", shared_key: "kappa123"}')
-        # TODO maybe hide the noise encrypt/decrypt into the sending/receiving interface?
-        # we never communicate without noise anyway
-        self.send(soc, encrypted_message)
+        channel.send(b'{user: "pepa", shared_key: "kappa123"}')
+        status = channel.receive()
 
-        ciphertext = self.receive(soc)
-        plaintext = noise.decrypt(ciphertext)
+        logging.debug(f"Server responded with:\n{status}")
 
-        print(plaintext)
+        if status != b"OK\n":
+            logging.error("Register command failed")
+            return
 
-        self.disconnect(soc)
+        logging.debug("Register was successfull, closing connection")
+        soc.close()
 
 
 if __name__ == "__main__":
+    # TODO let user set logging level in CLI
+    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(message)s")
+
     client = Client()
     client.register("127.0.0.1", 65432)
