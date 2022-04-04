@@ -1,4 +1,5 @@
 from tpm2_pytss import *
+import hashlib
 
 
 def create_primary(ectx):
@@ -29,24 +30,30 @@ def create_primary(ectx):
     return ectx.create_primary(
         in_sensitive, in_public, ESYS_TR.OWNER, outside_info, creation_pcr,
     )
-    # TODO Make the key persistent (out of memory issues in this function)
 
 
-def sign_pcr(ectx):
+def get_signed_pcr(ectx):
+    """
+    Get the PCR values and their signature using ECDSA and SHA256
+    """
+    rand_nonce = bytes(ectx.get_random(20))
     key = create_primary(ectx)
     key_handle = key[0]
-    quote, signature = ectx.quote(
-        key_handle, "sha1:0,1,2,3,4,5,6,7", TPM2B_DATA(b"123456789")
-    )
-    public = key[1]
-    print(public.publicArea.unique.ecc.x)
-    print(public.publicArea.unique.ecc.y)
-    print(signature.signature.ecdsa.signatureR)
-    print(signature.signature.ecdsa.signatureS)
-    # TODO Verify TPM signature
+    scheme = TPMT_SIG_SCHEME(scheme=TPM2_ALG.ECDSA)
+    scheme.details.any.hashAlg = TPM2_ALG.SHA256
+    quote, signature = ectx.quote(key_handle, "sha256:0,1,2,3,4,5,6,7", rand_nonce, scheme)
+    m = hashlib.sha256()
+    m.update(bytes(quote))
+    quote_digest = m.digest()
+    verified = ectx.verify_signature(key_handle, quote_digest, signature)
+    if type(verified) != TPMT_TK_VERIFIED:
+        return None
+    ectx.flush_context(key_handle)
+    return quote, signature
 
 
 tcti = TCTILdr("mssim", f"port=2321")
 ectx = ESAPI(tcti)
 ectx.startup(TPM2_SU.CLEAR)
-sign_pcr(ectx)
+q, s = get_signed_pcr(ectx)
+ectx.shutdown(TPM2_SU.CLEAR)
