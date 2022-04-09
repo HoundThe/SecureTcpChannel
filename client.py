@@ -2,6 +2,7 @@ from ast import arg
 import json
 import logging
 import argparse
+from warnings import catch_warnings
 import noise.constants as constants
 from socket import socket, AF_INET, SOCK_STREAM
 from typing import Tuple
@@ -10,6 +11,7 @@ from noise.connection import Keypair
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization
 
+excpected_pub_key = b'\x9cHb\x02\xfe0s\xc9\x876A\x99AZ\xf4\xaf\x18\xbdI\x98CB\xce\xb3\xa2Xx|@\x97aZ'
 
 class MessageChannel:
     protocol_name = b"Noise_KK_25519_ChaChaPoly_SHA256"
@@ -69,7 +71,7 @@ class MessageChannel:
 
 
 class RegisterChannel:
-    protocol_name: bytes = b"Noise_NN_25519_ChaChaPoly_SHA256"
+    protocol_name: bytes = b"Noise_NK_25519_ChaChaPoly_SHA256"
     # Using that by specification, maximum noise message is 64k
     recv_buffersize = constants.MAX_MESSAGE_LEN
     noise: NoiseConnection
@@ -78,11 +80,14 @@ class RegisterChannel:
     def __init__(self, soc: socket) -> None:
         self.soc = soc
         self.handshake()
-
     def handshake(self) -> NoiseConnection:
         noise = NoiseConnection.from_name(self.protocol_name)
         # Set role in this connection as initiator
         noise.set_as_initiator()
+        noise.set_keypair_from_public_bytes(
+            Keypair.REMOTE_STATIC,
+            excpected_pub_key
+        )
         # Enter handshake mode
         noise.start_handshake()
 
@@ -236,5 +241,8 @@ if __name__ == "__main__":
     parse_arguments()
 
     client = Client("127.0.0.1", 65432)
-    client.register("xhajek10")
-    client.message("xhajek10")
+    try:
+        client.register("xhajek10")
+        client.message("xhajek10")
+    except Exception as ex:
+        print(f"An unexpected error happened, reason: {str(ex)}")

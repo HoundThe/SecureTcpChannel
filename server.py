@@ -9,6 +9,7 @@ from noise.connection import Keypair
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization
 
+preset_priv_key = b'\xb0\x93dq\xa3\xd4\x96@\xc4\xd2&\xca\x1e@\x95\x83\x11"\xe4\xbb\x1c\x98\xdd\xdeo\x19\xdd\xc3z\x92FW'
 
 class MessageChannel:
     protocol_name: bytes = b"Noise_KK_25519_ChaChaPoly_SHA256"
@@ -74,7 +75,7 @@ class MessageChannel:
 
 
 class RegisterChannel:
-    protocol_name: bytes = b"Noise_NN_25519_ChaChaPoly_SHA256"
+    protocol_name: bytes = b"Noise_NK_25519_ChaChaPoly_SHA256"
     # Using that by specification, maximum noise message is 64k
     recv_buffersize = constants.MAX_MESSAGE_LEN
     noise: NoiseConnection
@@ -88,6 +89,10 @@ class RegisterChannel:
         noise = NoiseConnection.from_name(self.protocol_name)
         # Set role in this connection as responder
         noise.set_as_responder()
+        noise.set_keypair_from_private_bytes(
+            Keypair.STATIC,
+            preset_priv_key
+        )
         # Enter handshake mode
         noise.start_handshake()
 
@@ -123,7 +128,7 @@ class Server:
     users: Dict[str, x25519.X25519PublicKey] = {}
 
     def __init__(self) -> None:
-        self.server_key = x25519.X25519PrivateKey.generate()
+        self.server_key = x25519.X25519PrivateKey.from_private_bytes(preset_priv_key)
 
     def register_command(self, soc: socket):
         channel = RegisterChannel(soc)
