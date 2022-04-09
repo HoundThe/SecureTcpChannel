@@ -7,6 +7,7 @@ from noise.connection import NoiseConnection
 from noise.connection import Keypair
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization
+from tpm import get_signed_pcr, init_tpm, shutdown_tpm
 
 
 class MessageChannel:
@@ -118,7 +119,7 @@ class Client:
         self.server_address = (host, port)
         self.client_key = x25519.X25519PrivateKey.generate()
 
-    def register(self, login):
+    def register(self, login, ectx):
         """Register creates keypair for the client,
         it then sends server the user login and its
         public key. Server responds with its own public
@@ -142,8 +143,9 @@ class Client:
             serialization.Encoding.PEM,
             serialization.PublicFormat.SubjectPublicKeyInfo,
         )
-
-        register_data = {"login": login, "pubkey": pub_bytes.decode("utf8")}
+        _, _, _, _, quote_data = get_signed_pcr(ectx)
+        pcr_hash = quote_data[-32:]
+        register_data = {"login": login, "pubkey": pub_bytes.decode("utf8"), "pcr_hash": pcr_hash.hex()}
         logging.debug(f"Sending register data:\n{register_data}")
         channel.send(json.dumps(register_data).encode("utf8"))
 
@@ -168,7 +170,7 @@ class Client:
         logging.debug("Registration was successful, closing connection")
         soc.close()
 
-    def message(self, login):
+    def message(self, login, ectx):
         soc = socket(AF_INET, SOCK_STREAM)
         soc.connect(self.server_address)
 
@@ -181,6 +183,15 @@ class Client:
             return
 
         soc.sendall(login.encode("utf8"))
+        status = soc.recv(2048)
+        if status != b"OK\n":
+            logging.error("Message command failed")
+            return
+
+        x, y, r, s, quote = get_signed_pcr(ectx)
+        pcr_quote_data = {"x": x.hex(), "y": y.hex(), "r": r.hex(), "s": s.hex(), "quote": quote.hex()}
+        logging.debug(f"Sending PCR quote data:\n{pcr_quote_data}")
+        soc.sendall(json.dumps(pcr_quote_data).encode("utf8"))
         status = soc.recv(2048)
         if status != b"OK\n":
             logging.error("Message command failed")
@@ -209,7 +220,8 @@ class Client:
 if __name__ == "__main__":
     # TODO let user set logging level in CLI
     logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(message)s")
-
+    ectx = init_tpm()
     client = Client("127.0.0.1", 65432)
-    client.register("xhajek10")
-    client.message("xhajek10")
+    client.register("xhajek10", ectx)
+    client.message("xhajek10", ectx)
+    shutdown_tpm(ectx)
