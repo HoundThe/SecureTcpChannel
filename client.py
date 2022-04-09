@@ -1,5 +1,7 @@
+from ast import arg
 import json
 import logging
+import argparse
 import noise.constants as constants
 from socket import socket, AF_INET, SOCK_STREAM
 from typing import Tuple
@@ -165,7 +167,7 @@ class Client:
             logging.error("Registration failed")
             return
 
-        logging.debug("Registration was successful, closing connection")
+        print("Registration was successful, closing connection")
         soc.close()
 
     def message(self, login):
@@ -187,28 +189,51 @@ class Client:
             return
 
         logging.debug("Creating Message channel")
+        print("Logging in")
         channel = MessageChannel(soc, self.client_key, self.server_key)
 
         # TODO add TPM
 
-        logging.debug("Starting interactive communication channel")
-        while True:
-            try:
+        print("Connected to server, you can type your messages now\nYou can end the communication by typing END or pressing Ctrl + C\n")
+        
+        try:
+            while True:
+                print("Your message:", end='')
                 message = input()
+                if(message == "END"):
+                    break
                 channel.send(message.encode("utf8"))
                 response = channel.receive()
                 print(f"Server: {response}")
-            except EOFError as ex:
-                channel.send(b"END\n")
-                break
+        except (EOFError, KeyboardInterrupt):
+            pass
+        except Exception as ex:
+            print(f"An unexpected error happened, reason: {str(ex)}")
+        finally:
+            pass
+            channel.send(b"END\n")
 
-        logging.debug("Communication finished, closing connection")
+        print("Communication finished, closing connection")
         soc.close()
 
+def parse_arguments():
+    arg_parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter, description=
+    f"""
+    This is a simple communication application which allows you to store messages on a server
+    provided in server.py. Keep in mind, that the messages are stored in memory only, so stored
+    keys and messages will be deleted when the server is shut down.\n
+
+    This client will first register itself on the provided server (currently pointing
+    to localhost for the sake of the project) and then log in along with TPM-based authentication.
+    """)
+
+    arg_parser.add_argument("-d", "--debug", help="Turns on debugging messages", action="store_true")
+    args = arg_parser.parse_args()
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(message)s")
 
 if __name__ == "__main__":
-    # TODO let user set logging level in CLI
-    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(message)s")
+    parse_arguments()
 
     client = Client("127.0.0.1", 65432)
     client.register("xhajek10")

@@ -199,11 +199,19 @@ class Server:
                 conn, addr = s.accept()
                 logging.debug(f"Connection from {addr}")
                 with conn:
-                    self.handler(conn)
+                    try:
+                        self.handler(conn)
+                    except KeyboardInterrupt:
+                        raise(KeyboardInterrupt)
+                    except Exception as ex:
+                        logging.debug(f"An error occured with connection from {addr}.\nReason: {str(ex)}")
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(message)s")
 
     server = Server()
-    server.run()
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        print("Server shutting down")
