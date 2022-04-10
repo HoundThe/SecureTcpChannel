@@ -1,5 +1,7 @@
+from ast import arg
 import json
 import logging
+import argparse
 import noise.constants as constants
 from socket import socket, AF_INET, SOCK_STREAM
 from typing import Tuple
@@ -8,6 +10,8 @@ from noise.connection import Keypair
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization
 from tpm import get_signed_pcr, init_tpm, shutdown_tpm
+
+excpected_pub_key = b'\x9cHb\x02\xfe0s\xc9\x876A\x99AZ\xf4\xaf\x18\xbdI\x98CB\xce\xb3\xa2Xx|@\x97aZ'
 
 
 class MessageChannel:
@@ -20,10 +24,10 @@ class MessageChannel:
     server_key: x25519.X25519PublicKey
 
     def __init__(
-        self,
-        soc: socket,
-        user_key: x25519.X25519PrivateKey,
-        server_key: x25519.X25519PublicKey,
+            self,
+            soc: socket,
+            user_key: x25519.X25519PrivateKey,
+            server_key: x25519.X25519PublicKey,
     ) -> None:
         self.soc = soc
         self.user_key = user_key
@@ -68,7 +72,7 @@ class MessageChannel:
 
 
 class RegisterChannel:
-    protocol_name: bytes = b"Noise_NN_25519_ChaChaPoly_SHA256"
+    protocol_name: bytes = b"Noise_NK_25519_ChaChaPoly_SHA256"
     # Using that by specification, maximum noise message is 64k
     recv_buffersize = constants.MAX_MESSAGE_LEN
     noise: NoiseConnection
@@ -82,6 +86,10 @@ class RegisterChannel:
         noise = NoiseConnection.from_name(self.protocol_name)
         # Set role in this connection as initiator
         noise.set_as_initiator()
+        noise.set_keypair_from_public_bytes(
+            Keypair.REMOTE_STATIC,
+            excpected_pub_key
+        )
         # Enter handshake mode
         noise.start_handshake()
 
@@ -143,7 +151,8 @@ class Client:
             serialization.Encoding.PEM,
             serialization.PublicFormat.SubjectPublicKeyInfo,
         )
-        _, _, _, _, quote_data = get_signed_pcr(ectx)
+
+        _, _, _, _, quote_data = get_signed_pcr(ectx, b"123456789")
         pcr_hash = quote_data[-32:]
         register_data = {"login": login, "pubkey": pub_bytes.decode("utf8"), "pcr_hash": pcr_hash.hex()}
         logging.debug(f"Sending register data:\n{register_data}")
@@ -167,7 +176,7 @@ class Client:
             logging.error("Registration failed")
             return
 
-        logging.debug("Registration was successful, closing connection")
+        print("Registration was successful, closing connection")
         soc.close()
 
     def message(self, login, ectx):
@@ -188,7 +197,8 @@ class Client:
             logging.error("Message command failed")
             return
 
-        x, y, r, s, quote = get_signed_pcr(ectx)
+        rand_nonce = soc.recv(2048)
+        x, y, r, s, quote = get_signed_pcr(ectx, rand_nonce)
         pcr_quote_data = {"x": x.hex(), "y": y.hex(), "r": r.hex(), "s": s.hex(), "quote": quote.hex()}
         logging.debug(f"Sending PCR quote data:\n{pcr_quote_data}")
         soc.sendall(json.dumps(pcr_quote_data).encode("utf8"))
@@ -198,30 +208,57 @@ class Client:
             return
 
         logging.debug("Creating Message channel")
+        print("Logging in")
         channel = MessageChannel(soc, self.client_key, self.server_key)
 
-        # TODO add TPM
+        print(
+            "Connected to server, you can type your messages now\nYou can end the communication by typing END or pressing Ctrl + C\n")
 
-        logging.debug("Starting interactive communication channel")
-        while True:
-            try:
+        try:
+            while True:
+                print("Your message:", end='')
                 message = input()
+                if (message == "END"):
+                    break
                 channel.send(message.encode("utf8"))
                 response = channel.receive()
                 print(f"Server: {response}")
-            except EOFError as ex:
-                channel.send(b"END\n")
-                break
+        except (EOFError, KeyboardInterrupt):
+            pass
+        except Exception as ex:
+            print(f"An unexpected error happened, reason: {str(ex)}")
+        finally:
+            pass
+            channel.send(b"END\n")
 
-        logging.debug("Communication finished, closing connection")
+        print("Communication finished, closing connection")
         soc.close()
 
 
+def parse_arguments():
+    arg_parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter, description=
+    f"""
+    This is a simple communication application which allows you to store messages on a server
+    provided in server.py. Keep in mind, that the messages are stored in memory only, so stored
+    keys and messages will be deleted when the server is shut down.\n
+    This client will first register itself on the provided server (currently pointing
+    to localhost for the sake of the project) and then log in along with TPM-based authentication.
+    """)
+
+    arg_parser.add_argument("-d", "--debug", help="Turns on debugging messages", action="store_true")
+    args = arg_parser.parse_args()
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(message)s")
+
+
 if __name__ == "__main__":
-    # TODO let user set logging level in CLI
-    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(message)s")
-    ectx = init_tpm()
+    parse_arguments()
+
     client = Client("127.0.0.1", 65432)
-    client.register("xhajek10", ectx)
-    client.message("xhajek10", ectx)
-    shutdown_tpm(ectx)
+    ectx = init_tpm()
+    try:
+        client.register("xhajek10", ectx)
+        client.message("xhajek10", ectx)
+        shutdown_tpm(ectx)
+    except Exception as ex:
+        print(f"An unexpected error happened, reason: {str(ex)}")

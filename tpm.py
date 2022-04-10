@@ -36,16 +36,15 @@ def create_primary(ectx):
     )
 
 
-def get_signed_pcr(ectx):
+def get_signed_pcr(ectx, random_nonce):
     """
     Get the PCR values and their signature using ECDSA and SHA256
     """
-    rand_nonce = bytes(ectx.get_random(20))
     key = create_primary(ectx)
     key_handle = key[0]
     scheme = TPMT_SIG_SCHEME(scheme=TPM2_ALG.ECDSA)
     scheme.details.any.hashAlg = TPM2_ALG.SHA256
-    quote, signature = ectx.quote(key_handle, "sha256:0,1,2,3,4,5,6,7", rand_nonce, scheme)
+    quote, signature = ectx.quote(key_handle, "sha256:0,1,2,3,4,5,6,7", random_nonce, scheme)
     quote_data = bytes(quote)
     m = hashlib.sha256()
     m.update(quote_data)

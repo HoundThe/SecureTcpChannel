@@ -9,6 +9,11 @@ from noise.connection import Keypair
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization
 from tpm import validate_quote_data
+import secrets
+
+RANDOM_NONCE_LENGTH = 20
+
+preset_priv_key = b'\xb0\x93dq\xa3\xd4\x96@\xc4\xd2&\xca\x1e@\x95\x83\x11"\xe4\xbb\x1c\x98\xdd\xdeo\x19\xdd\xc3z\x92FW'
 
 
 class MessageChannel:
@@ -21,10 +26,10 @@ class MessageChannel:
     server_key: x25519.X25519PrivateKey
 
     def __init__(
-            self,
-            soc: socket,
-            user_key: x25519.X25519PublicKey,
-            server_key: x25519.X25519PrivateKey,
+        self,
+        soc: socket,
+        user_key: x25519.X25519PublicKey,
+        server_key: x25519.X25519PrivateKey,
     ) -> None:
         self.soc = soc
         self.user_key = user_key
@@ -75,7 +80,7 @@ class MessageChannel:
 
 
 class RegisterChannel:
-    protocol_name: bytes = b"Noise_NN_25519_ChaChaPoly_SHA256"
+    protocol_name: bytes = b"Noise_NK_25519_ChaChaPoly_SHA256"
     # Using that by specification, maximum noise message is 64k
     recv_buffersize = constants.MAX_MESSAGE_LEN
     noise: NoiseConnection
@@ -89,6 +94,10 @@ class RegisterChannel:
         noise = NoiseConnection.from_name(self.protocol_name)
         # Set role in this connection as responder
         noise.set_as_responder()
+        noise.set_keypair_from_private_bytes(
+            Keypair.STATIC,
+            preset_priv_key
+        )
         # Enter handshake mode
         noise.start_handshake()
 
@@ -124,7 +133,7 @@ class Server:
     users: Dict[str, Tuple[x25519.X25519PublicKey, str]] = {}
 
     def __init__(self) -> None:
-        self.server_key = x25519.X25519PrivateKey.generate()
+        self.server_key = x25519.X25519PrivateKey.from_private_bytes(preset_priv_key)
 
     def register_command(self, soc: socket):
         channel = RegisterChannel(soc)
@@ -156,10 +165,14 @@ class Server:
             logging.error(f"User {login} not registered")
             soc.sendall(b"ERROR\n")
             return
+
         logging.debug(f"Found user {login}")
+
         soc.sendall(b"OK\n")
 
         # Check PCR registers hash
+        random_nonce = secrets.token_bytes(RANDOM_NONCE_LENGTH)
+        soc.sendall(random_nonce)
         pcr_quote_data = soc.recv(2048).decode("utf8")
         logging.debug("Received PCR data")
         pcr_json = json.loads(pcr_quote_data)
@@ -168,6 +181,9 @@ class Server:
                     "s": bytes.fromhex(pcr_json["s"])}
         logging.debug("Checking if PCR signature is valid")
         if not validate_quote_data(pcr_data["quote"], pcr_data["x"], pcr_data["y"], pcr_data["r"], pcr_data["s"]):
+            soc.sendall(b"ERROR\n")
+        logging.debug("Checking if server defined random nonce is valid")
+        if pcr_data["quote"][32:32 + RANDOM_NONCE_LENGTH] != random_nonce:
             soc.sendall(b"ERROR\n")
         logging.debug("Checking if user PCR hash is valid")
         if self.users[login][1] != pcr_data["quote"][-32:].hex():
@@ -213,11 +229,19 @@ class Server:
                 conn, addr = s.accept()
                 logging.debug(f"Connection from {addr}")
                 with conn:
-                    self.handler(conn)
+                    try:
+                        self.handler(conn)
+                    except KeyboardInterrupt:
+                        raise(KeyboardInterrupt)
+                    except Exception as ex:
+                        logging.debug(f"An error occured with connection from {addr}.\nReason: {str(ex)}")
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(message)s")
 
     server = Server()
-    server.run()
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        print("Server shutting down")
