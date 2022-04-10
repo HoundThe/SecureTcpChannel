@@ -62,6 +62,7 @@ def get_signed_pcr(ectx, random_nonce):
 
 
 def validate_quote_data(quote_data, pub_x, pub_y, sig_r, sig_s):
+    # Function from https://github.com/Matej4545/PV204-NoisyTPM/blob/main/tpm2_util.py
     pub_nums = ec.EllipticCurvePublicNumbers(
         curve=ec.SECP256R1(), x=int.from_bytes(pub_x, "big"), y=int.from_bytes(pub_y, "big")
     )

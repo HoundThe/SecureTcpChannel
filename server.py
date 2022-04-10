@@ -182,12 +182,15 @@ class Server:
         logging.debug("Checking if PCR signature is valid")
         if not validate_quote_data(pcr_data["quote"], pcr_data["x"], pcr_data["y"], pcr_data["r"], pcr_data["s"]):
             soc.sendall(b"ERROR\n")
+            soc.close()
         logging.debug("Checking if server defined random nonce is valid")
         if pcr_data["quote"][32:32 + RANDOM_NONCE_LENGTH] != random_nonce:
             soc.sendall(b"ERROR\n")
+            soc.close()
         logging.debug("Checking if user PCR hash is valid")
         if self.users[login][1] != pcr_data["quote"][-32:].hex():
             soc.sendall(b"ERROR\n")
+            soc.close()
         soc.sendall(b"OK\n")
 
         logging.debug("Opening Message channel")
