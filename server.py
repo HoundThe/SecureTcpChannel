@@ -2,6 +2,7 @@ import json
 from typing import Dict, Tuple
 import noise.constants as constants
 import logging
+import argparse
 from socket import socket, AF_INET, SOCK_STREAM, SO_REUSEADDR, SOL_SOCKET
 from noise.connection import NoiseConnection
 from itertools import cycle
@@ -13,9 +14,6 @@ import secrets
 
 RANDOM_NONCE_LENGTH = 20
 
-preset_priv_key = b'\xb0\x93dq\xa3\xd4\x96@\xc4\xd2&\xca\x1e@\x95\x83\x11"\xe4\xbb\x1c\x98\xdd\xdeo\x19\xdd\xc3z\x92FW'
-
-preset_priv_key = b'\xb0\x93dq\xa3\xd4\x96@\xc4\xd2&\xca\x1e@\x95\x83\x11"\xe4\xbb\x1c\x98\xdd\xdeo\x19\xdd\xc3z\x92FW'
 
 class MessageChannel:
     protocol_name: bytes = b"Noise_KK_25519_ChaChaPoly_SHA256"
@@ -86,9 +84,11 @@ class RegisterChannel:
     recv_buffersize = constants.MAX_MESSAGE_LEN
     noise: NoiseConnection
     soc: socket
+    server_key: x25519.X25519PrivateKey
 
-    def __init__(self, soc: socket) -> None:
+    def __init__(self, soc: socket, server_key: x25519.X25519PrivateKey) -> None:
         self.soc = soc
+        self.server_key = server_key
         self.handshake()
 
     def handshake(self) -> NoiseConnection:
@@ -97,7 +97,11 @@ class RegisterChannel:
         noise.set_as_responder()
         noise.set_keypair_from_private_bytes(
             Keypair.STATIC,
-            preset_priv_key
+            self.server_key.private_bytes(
+                serialization.Encoding.Raw,
+                serialization.PrivateFormat.Raw,
+                serialization.NoEncryption(),
+            ),
         )
         # Enter handshake mode
         noise.start_handshake()
@@ -133,21 +137,26 @@ class Server:
     server_key: x25519.X25519PrivateKey
     users: Dict[str, Tuple[x25519.X25519PublicKey, str]] = {}
 
-    def __init__(self) -> None:
-        self.server_key = x25519.X25519PrivateKey.from_private_bytes(preset_priv_key)
+    def __init__(self, host, port) -> None:
+        self.host = host
+        self.port = port
+        # Fixed server private assymetric key, for ease of use instead of using separate file
+        server_private_bytes = b'\xb0\x93dq\xa3\xd4\x96@\xc4\xd2&\xca\x1e@\x95\x83\x11"\xe4\xbb\x1c\x98\xdd\xdeo\x19\xdd\xc3z\x92FW'
+        self.server_key = x25519.X25519PrivateKey.from_private_bytes(
+            server_private_bytes
+        )
 
     def register_command(self, soc: socket):
-        channel = RegisterChannel(soc)
+        channel = RegisterChannel(soc, self.server_key)
 
         register_data = channel.receive()
         logging.info(f"Received register data:\n{register_data}")
 
         reg_js = json.loads(register_data)
-        self.users[reg_js["login"]] = (serialization.load_pem_public_key(
-            reg_js["pubkey"].encode("utf8")
-        ), reg_js['pcr_hash'])
-
-        # TODO add processing when we'll decide what the data should be
+        self.users[reg_js["login"]] = (
+            serialization.load_pem_public_key(reg_js["pubkey"].encode("utf8")),
+            reg_js["pcr_hash"],
+        )
 
         # Send back server public key
         pub_bytes = self.server_key.public_key().public_bytes(
@@ -174,24 +183,40 @@ class Server:
         # Check PCR registers hash
         random_nonce = secrets.token_bytes(RANDOM_NONCE_LENGTH)
         soc.sendall(random_nonce)
+
         pcr_quote_data = soc.recv(2048).decode("utf8")
         logging.debug("Received PCR data")
+
         pcr_json = json.loads(pcr_quote_data)
-        pcr_data = {"quote": bytes.fromhex(pcr_json["quote"]), "x": bytes.fromhex(pcr_json["x"]),
-                    "y": bytes.fromhex(pcr_json["y"]), "r": bytes.fromhex(pcr_json["r"]),
-                    "s": bytes.fromhex(pcr_json["s"])}
+        pcr_data = {
+            "quote": bytes.fromhex(pcr_json["quote"]),
+            "x": bytes.fromhex(pcr_json["x"]),
+            "y": bytes.fromhex(pcr_json["y"]),
+            "r": bytes.fromhex(pcr_json["r"]),
+            "s": bytes.fromhex(pcr_json["s"]),
+        }
+
         logging.debug("Checking if PCR signature is valid")
-        if not validate_quote_data(pcr_data["quote"], pcr_data["x"], pcr_data["y"], pcr_data["r"], pcr_data["s"]):
+        if not validate_quote_data(
+            pcr_data["quote"],
+            pcr_data["x"],
+            pcr_data["y"],
+            pcr_data["r"],
+            pcr_data["s"],
+        ):
             soc.sendall(b"ERROR\n")
             soc.close()
+
         logging.debug("Checking if server defined random nonce is valid")
-        if pcr_data["quote"][32:32 + RANDOM_NONCE_LENGTH] != random_nonce:
+        if pcr_data["quote"][32 : 32 + RANDOM_NONCE_LENGTH] != random_nonce:
             soc.sendall(b"ERROR\n")
             soc.close()
+
         logging.debug("Checking if user PCR hash is valid")
         if self.users[login][1] != pcr_data["quote"][-32:].hex():
             soc.sendall(b"ERROR\n")
             soc.close()
+
         soc.sendall(b"OK\n")
 
         logging.debug("Opening Message channel")
@@ -236,15 +261,41 @@ class Server:
                     try:
                         self.handler(conn)
                     except KeyboardInterrupt:
-                        raise(KeyboardInterrupt)
+                        raise (KeyboardInterrupt)
                     except Exception as ex:
-                        logging.debug(f"An error occured with connection from {addr}.\nReason: {str(ex)}")
+                        logging.debug(
+                            f"An error occured with connection from {addr}.\nReason: {str(ex)}"
+                        )
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(message)s")
+    arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument(
+        "-i",
+        "--ip",
+        action="store",
+        type=str,
+        default="127.0.0.1",
+        help="Specifies IP address for communication, default is 127.0.0.1",
+    )
+    arg_parser.add_argument(
+        "-p",
+        "--port",
+        action="store",
+        type=int,
+        default=65432,
+        help="Specifies port for communication, default is 65432",
+    )
+    arg_parser.add_argument(
+        "-d", "--debug", help="Turns on debugging messages", action="store_true"
+    )
 
-    server = Server()
+    args = arg_parser.parse_args()
+
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(message)s")
+
+    server = Server(args.ip, args.port)
     try:
         server.run()
     except KeyboardInterrupt:
