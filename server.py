@@ -1,5 +1,5 @@
 import json
-from typing import Dict
+from typing import Dict, Tuple
 import noise.constants as constants
 import logging
 from socket import socket, AF_INET, SOCK_STREAM, SO_REUSEADDR, SOL_SOCKET
@@ -8,6 +8,12 @@ from itertools import cycle
 from noise.connection import Keypair
 from cryptography.hazmat.primitives.asymmetric import x25519
 from cryptography.hazmat.primitives import serialization
+from tpm import validate_quote_data
+import secrets
+
+RANDOM_NONCE_LENGTH = 20
+
+preset_priv_key = b'\xb0\x93dq\xa3\xd4\x96@\xc4\xd2&\xca\x1e@\x95\x83\x11"\xe4\xbb\x1c\x98\xdd\xdeo\x19\xdd\xc3z\x92FW'
 
 preset_priv_key = b'\xb0\x93dq\xa3\xd4\x96@\xc4\xd2&\xca\x1e@\x95\x83\x11"\xe4\xbb\x1c\x98\xdd\xdeo\x19\xdd\xc3z\x92FW'
 
@@ -125,7 +131,7 @@ class Server:
     port: int = 65432
     recv_buffer: int = 4096
     server_key: x25519.X25519PrivateKey
-    users: Dict[str, x25519.X25519PublicKey] = {}
+    users: Dict[str, Tuple[x25519.X25519PublicKey, str]] = {}
 
     def __init__(self) -> None:
         self.server_key = x25519.X25519PrivateKey.from_private_bytes(preset_priv_key)
@@ -137,9 +143,9 @@ class Server:
         logging.info(f"Received register data:\n{register_data}")
 
         reg_js = json.loads(register_data)
-        self.users[reg_js["login"]] = serialization.load_pem_public_key(
+        self.users[reg_js["login"]] = (serialization.load_pem_public_key(
             reg_js["pubkey"].encode("utf8")
-        )
+        ), reg_js['pcr_hash'])
 
         # TODO add processing when we'll decide what the data should be
 
@@ -165,8 +171,31 @@ class Server:
 
         soc.sendall(b"OK\n")
 
+        # Check PCR registers hash
+        random_nonce = secrets.token_bytes(RANDOM_NONCE_LENGTH)
+        soc.sendall(random_nonce)
+        pcr_quote_data = soc.recv(2048).decode("utf8")
+        logging.debug("Received PCR data")
+        pcr_json = json.loads(pcr_quote_data)
+        pcr_data = {"quote": bytes.fromhex(pcr_json["quote"]), "x": bytes.fromhex(pcr_json["x"]),
+                    "y": bytes.fromhex(pcr_json["y"]), "r": bytes.fromhex(pcr_json["r"]),
+                    "s": bytes.fromhex(pcr_json["s"])}
+        logging.debug("Checking if PCR signature is valid")
+        if not validate_quote_data(pcr_data["quote"], pcr_data["x"], pcr_data["y"], pcr_data["r"], pcr_data["s"]):
+            soc.sendall(b"ERROR\n")
+            soc.close()
+        logging.debug("Checking if server defined random nonce is valid")
+        if pcr_data["quote"][32:32 + RANDOM_NONCE_LENGTH] != random_nonce:
+            soc.sendall(b"ERROR\n")
+            soc.close()
+        logging.debug("Checking if user PCR hash is valid")
+        if self.users[login][1] != pcr_data["quote"][-32:].hex():
+            soc.sendall(b"ERROR\n")
+            soc.close()
+        soc.sendall(b"OK\n")
+
         logging.debug("Opening Message channel")
-        channel = MessageChannel(soc, self.users[login], self.server_key)
+        channel = MessageChannel(soc, self.users[login][0], self.server_key)
 
         logging.debug("Echoing messages")
         response = b""
