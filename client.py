@@ -13,6 +13,7 @@ from tpm import get_signed_pcr, init_tpm, shutdown_tpm
 
 excpected_pub_key = b'\x9cHb\x02\xfe0s\xc9\x876A\x99AZ\xf4\xaf\x18\xbdI\x98CB\xce\xb3\xa2Xx|@\x97aZ'
 
+excpected_pub_key = b'\x9cHb\x02\xfe0s\xc9\x876A\x99AZ\xf4\xaf\x18\xbdI\x98CB\xce\xb3\xa2Xx|@\x97aZ'
 
 class MessageChannel:
     protocol_name = b"Noise_KK_25519_ChaChaPoly_SHA256"
@@ -81,7 +82,6 @@ class RegisterChannel:
     def __init__(self, soc: socket) -> None:
         self.soc = soc
         self.handshake()
-
     def handshake(self) -> NoiseConnection:
         noise = NoiseConnection.from_name(self.protocol_name)
         # Set role in this connection as initiator
@@ -214,11 +214,13 @@ class Client:
         print(
             "Connected to server, you can type your messages now\nYou can end the communication by typing END or pressing Ctrl + C\n")
 
+
         try:
             while True:
                 print("Your message:", end='')
                 message = input()
                 if (message == "END"):
+
                     break
                 channel.send(message.encode("utf8"))
                 response = channel.receive()
@@ -234,6 +236,21 @@ class Client:
         print("Communication finished, closing connection")
         soc.close()
 
+def parse_arguments():
+    arg_parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter, description=
+    f"""
+    This is a simple communication application which allows you to store messages on a server
+    provided in server.py. Keep in mind, that the messages are stored in memory only, so stored
+    keys and messages will be deleted when the server is shut down.\n
+
+    This client will first register itself on the provided server (currently pointing
+    to localhost for the sake of the project) and then log in along with TPM-based authentication.
+    """)
+
+    arg_parser.add_argument("-d", "--debug", help="Turns on debugging messages", action="store_true")
+    args = arg_parser.parse_args()
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(message)s")
 
 def parse_arguments():
     arg_parser = argparse.ArgumentParser(formatter_class=argparse.RawTextHelpFormatter, description=
