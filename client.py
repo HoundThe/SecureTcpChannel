@@ -216,7 +216,7 @@ class Client:
         status = soc.recv(2048)
 
         if status != b"OK\n":
-            logging.error("Message command failed")
+            logging.error("Message command failed, TPM validation unsuccessful")
             return
 
         logging.debug("Creating Message channel")
